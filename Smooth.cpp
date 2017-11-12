@@ -51,8 +51,6 @@ int main(int argc,char *argv[])
 	char *outfileName2 = "output2.bmp";
 	double startwtime = 0.0, endwtime=0;
 	
-	
-	
 	/*MPI variable*/
 	int nproc,myid=0;
 	
@@ -63,41 +61,42 @@ int main(int argc,char *argv[])
 	
 	/*Define new RGB type to deliver*/
 	MPI_Datatype rgbtype;
-	MPI_Type_contiguous(3,MPI_BYTE,&rgbtype);
+	MPI_Type_contiguous(3,MPI_BYTE,&rgbtype); //use contiguous to modify my rgbtype{byte,byte,byte}
 	MPI_Type_commit(&rgbtype);
 	
-	//讀取檔案
-	//if(myid==0)
-	//{
-		if ( readBMP( infileName) )
-		{
-			if(myid==0)
-				cout << "Read file successfully!!" << endl;		
-		}
-		else
-		{			
-			cout << "Read file fails!!" << endl;
-		}	
-	//}
+	//讀取檔案(Here let every process can read the bmpinfo)
+	if ( readBMP( infileName) )
+	{
+		if(myid==0)
+			cout << "Read file successfully!!" << endl;		
+	}
+	else
+	{			
+		cout << "Read file fails!!" << endl;
+	}	
+
 	
-	/*Local RGB data*/
+	/*Local RGB data (Every process has its own local rgb data that scatterv from process 0)*/
 	RGBTRIPLE **myBMPSaveData = NULL;                                               
 	RGBTRIPLE **myBMPData = NULL;
 	myBMPData = alloc_memory( (bmpInfo.biHeight/nproc)+2, bmpInfo.biWidth);
 	myBMPSaveData = alloc_memory( (bmpInfo.biHeight/nproc)+2, bmpInfo.biWidth);
-	int recvcnt = (bmpInfo.biHeight/nproc) * bmpInfo.biWidth; //Every proc receive "revcnt" rgbdata
+	int recvcnt = (bmpInfo.biHeight/nproc) * bmpInfo.biWidth; //Every proc receive "revcnt" amount of rgbdata
 	int sendcnt[nproc];
 	int disp[nproc];
 	
-	for(int i=0;i < nproc;++i){
-		sendcnt[i] = recvcnt;//send data count = recv data count
-		disp[i] = i*recvcnt;//disp = i*recvcnt since that all sendcounts are the same
+	for(int i=0;i < nproc;++i)
+	{
+		sendcnt[i] = recvcnt;//send data amount = recv data amount
+		disp[i] = i*recvcnt;//disp = i*recvcnt since that all sendcounts are the same (disp is used to trace where every process start)
 	}
 	
-	//Scatter rgbdata
+	/*Scatter rgbdata*/
 	MPI_Scatterv(BMPSaveData[0],sendcnt, disp,rgbtype, myBMPSaveData[1], recvcnt, rgbtype, 0, MPI_COMM_WORLD);
-
-	//define left proc & right proc
+	
+	/**********************************************************/
+	/*define left process & right process (used to sendrecv())*/
+	/**********************************************************/
 	int lproc,rproc;
 	lproc=myid-1;
 	rproc=myid+1;
@@ -111,20 +110,34 @@ int main(int argc,char *argv[])
 		rproc=0;
 	}
 	
+	//Barrier until all processes come here
 	MPI_Barrier(MPI_COMM_WORLD);
+	
 	//start time
 	startwtime = MPI_Wtime();
-    //進行多次的平滑運算
-	for(int count = 0; count < NSmooth ; count ++){
-		//把像素資料與暫存指標做交換
+    
+	//進行多次的平滑運算
+	for(int count = 0; count < NSmooth ; count ++)
+	{
+	
+		//把像素資料與暫存指標做交換(local BMPdata update)
 		swap(myBMPSaveData,myBMPData);
 		
+		
+		/***************************/
+		/*		Send & Recv 	   */
+		/***************************/
+		//Send the last-1 row to right & receive first row from left 
 		MPI_Sendrecv((void *)&myBMPData[(bmpInfo.biHeight/nproc)][0], bmpInfo.biWidth,rgbtype, rproc, 110,(void *)&myBMPData[0][0], bmpInfo.biWidth, rgbtype, lproc, 110, MPI_COMM_WORLD, istat);
+		//Send the first+1 row to left & receive last row from right 
 		MPI_Sendrecv((void *)&myBMPData[1][0], bmpInfo.biWidth,rgbtype, lproc, 120,(void *)&myBMPData[(bmpInfo.biHeight/nproc)+1][0], bmpInfo.biWidth, rgbtype, rproc, 120, MPI_COMM_WORLD, istat);
+		
 		
 		//進行平滑運算
 		for(int i = 1; i< (bmpInfo.biHeight/nproc)+1; i++)
-			for(int j =0; j<bmpInfo.biWidth ; j++){
+		{
+			for(int j =0; j<bmpInfo.biWidth ; j++)
+			{
 				/*********************************************************/
 				/*設定上下左右像素的位置                                 */
 				/*********************************************************/
@@ -139,13 +152,17 @@ int main(int argc,char *argv[])
 				myBMPSaveData[i][j].rgbGreen =  (double) (myBMPData[i][j].rgbGreen+myBMPData[Top][j].rgbGreen+myBMPData[Down][j].rgbGreen+myBMPData[i][Left].rgbGreen+myBMPData[i][Right].rgbGreen)/5+0.5;
 				myBMPSaveData[i][j].rgbRed =  (double) (myBMPData[i][j].rgbRed+myBMPData[Top][j].rgbRed+myBMPData[Down][j].rgbRed+myBMPData[i][Left].rgbRed+myBMPData[i][Right].rgbRed)/5+0.5;
 			}
+		}
 	}
+	
 	MPI_Barrier(MPI_COMM_WORLD);
+	
 	//得到結束時間，並印出執行時間
 	endwtime = MPI_Wtime();
 	if(myid==0)
 		cout << "The execution time = "<< endwtime-startwtime <<endl ;
-	//gather saveData
+	
+	//gatherv saveData to Process 0
 	MPI_Gatherv(myBMPSaveData[1],recvcnt,rgbtype,BMPSaveData[0],sendcnt,disp,rgbtype,0,MPI_COMM_WORLD);
  
  	//寫入檔案
@@ -156,6 +173,8 @@ int main(int argc,char *argv[])
         else
                 cout << "Save file fails!!" << endl;
 	}
+	
+	//Free memmory space
  	free(BMPData);
  	free(BMPSaveData);
 	free(myBMPData);
